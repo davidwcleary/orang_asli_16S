@@ -1,0 +1,926 @@
+---
+title: "Orang Asli Oral and Nasal 16S Analysis"
+output: html_notebook
+---
+
+```{r load and save date}
+
+load("uBiome.RData")
+save.image(file = "uBiome.RData")
+
+```
+
+```{r packages}
+
+library("ggExtra")
+library("phyloseq")
+library("plyr")
+library("dplyr")
+library("ggplot2")
+library("ggpubr")
+library("vegan")
+library("reshape")
+library("decontam")
+library("DESeq2")
+library("gridExtra")
+library("hrbrthemes")
+library("gcookbook")
+library("microbiome")
+library("cowplot")
+
+library(devtools)
+library(qiime2R)
+library(ggplot2)
+
+library("tidyverse"); packageVersion("tidyverse")
+library("knitr"); packageVersion("knitr")
+library("DESeq2"); packageVersion("DESeq2")
+library("plotly"); packageVersion("plotly")
+library("ggpubr"); packageVersion("ggpubr")
+library("data.table"); packageVersion("data.table")
+
+install.packages("viridis")  # Install
+library("viridis")
+
+```
+
+```{r theme set}
+
+theme_set(theme_bw()) 
+
+```
+
+```{r contaminants} 
+
+sample_data(physeq)$is.neg <- sample_data(physeq)$BodySite =='Control' 
+
+contamdf.prev <- isContaminant(physeq, method="prevalence", neg="is.neg")
+
+table(contamdf.prev$contaminant)
+
+head(which(contamdf.prev$contaminant))
+
+tax_table(physeq)[contamdf.prev$contaminant,]
+
+```
+
+```{r split nose and oral}
+
+#nose
+physeq.n <- subset_samples(physeq,BodySite !='oral')
+#mouth
+physeq.o <- subset_samples(physeq,BodySite !='nasal')
+
+#remove the erroneous samples from the nose collection:
+
+physeq.n2 <- physeq.n %>%
+  subset_samples(
+    Subject != "121_N" & Subject != "26_N" & Subject != "97_N" & Subject != "109_N" & Subject != "23_N" & Subject != "79_N" & Subject != "74_N" & Subject != "81_N" & Subject != "103_N" & Subject != "11_N" & Subject != "110_N" & Subject != "123_N" & Subject != "75_N" & Subject != "76_N" & Subject != "116_N" & Subject != "106_N" & Subject != "113_N"
+    )
+
+```
+
+```{r Plot true v neg nose and mouth}
+
+physeq.n.pa <- transform_sample_counts(physeq.n2, function(abund) 1*(abund>0))
+physeq.n.pa.neg <- prune_samples(sample_data(physeq.n.pa)$BodySite != "nasal", physeq.n.pa)
+physeq.n.pa.pos <- prune_samples(sample_data(physeq.n.pa)$BodySite == "nasal", physeq.n.pa)
+# Make data.frame of prevalence in positive and negative samples
+df.pa.n <- data.frame(pa.pos=taxa_sums(physeq.n.pa.pos), pa.neg=taxa_sums(physeq.n.pa.neg),
+                      contaminant=contamdf.prev$contaminant)
+df.pa.n.plot <- ggplot(data=df.pa.n, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+
+physeq.o.pa <- transform_sample_counts(physeq.o, function(abund) 1*(abund>0))
+physeq.o.pa.neg <- prune_samples(sample_data(physeq.o.pa)$BodySite != "oral", physeq.o.pa)
+physeq.o.pa.pos <- prune_samples(sample_data(physeq.o.pa)$BodySite == "oral", physeq.o.pa)
+# Make data.frame of prevalence in positive and negative samples
+df.pa.o <- data.frame(pa.pos=taxa_sums(physeq.o.pa.pos), pa.neg=taxa_sums(physeq.o.pa.neg),
+                      contaminant=contamdf.prev$contaminant)
+df.pa.o.plot <- ggplot(data=df.pa.o, aes(x=pa.neg, y=pa.pos, color=contaminant)) + geom_point() +
+  xlab("Prevalence (Negative Controls)") + ylab("Prevalence (True Samples)")
+
+df.pa.n.plot
+df.pa.o.plot
+```
+
+```{r Prune contaminants}
+ps.n.noncontam <- prune_taxa(!contamdf.prev$contaminant, physeq.n2)
+ps.n.noncontam
+
+ps.o.noncontam <- prune_taxa(!contamdf.prev$contaminant, physeq.o)
+ps.o.noncontam
+```
+
+```{r Subset control samples}
+
+sample_variables(ps.n.noncontam)
+get_variable(ps.n.noncontam, "BodySite")
+
+psC <- subset_samples(ps.n.noncontam, BodySite == "Control") #so this contains just the control samples
+
+ps.n.0 <- subset_samples(ps.n.noncontam, BodySite == "nasal") #and this contains all the others
+ps.o.0 <- subset_samples(ps.o.noncontam, BodySite == "oral") #and this contains all the others
+
+```
+
+```{r Control Sample Analysis}
+
+psC <- subset_samples(subset_samples(physeq, BodySite == "Control"))
+
+psC.1 <- subset_taxa(psC, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+table(tax_table(psC.1)[,"Phylum"], exclude = NULL)
+
+psC.2 <- psC.1 %>%
+  subset_taxa(
+    Kingdom == "k__Bacteria" &
+      Family  != "f__mitochondria" &
+      Class   != "c__Chloroplast" &
+      Phylum != "p__Cyanobacteria"
+  )
+
+psC.2.GGlom <- tax_glom(psC.2, "Genus")
+psC.GGlom <- tax_glom(psC, "Genus")
+
+plotDF.C.2 <- psmelt(psC.2.GGlom)
+plotDF.C <- psmelt(psC.GGlom)
+
+propData.C <- as.data.frame(t(otu_table(psC.2.GGlom)))
+
+# plot again
+ggplot(plotDF.C, aes(Sample, Abundance, fill=Phylum)) + 
+  geom_bar(stat="identity", position = "stack") + 
+  #scale_fill_brewer(palette = "Dark2") + 
+  theme(legend.position = "bottom") +
+  theme_light() +
+  xlab("Controls") +
+  theme(axis.text.x = element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, size = 5)) +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+
+plot_bar(psC.GGlom, x="Sample", y="Abundance", fill="Genus")
+
+```
+
+```{r Produce a table of phyla with counts}
+
+table(tax_table(ps.n.0)[,"Phylum"], exclude = NULL)
+
+table(tax_table(ps.o.0)[,"Phylum"], exclude = NULL)
+
+```
+
+```{r Remove NA}
+
+#is.na is an exlude function, here only directed at the Phylum level. the %in% is used to identity if what follows appears in a vector
+
+ps.n.1 <- subset_taxa(ps.n.0, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+table(tax_table(ps.n.1)[,"Phylum"], exclude = NULL)
+
+ps.o.1 <- subset_taxa(ps.o.0, !is.na(Phylum) & !Phylum %in% c("", "uncharacterized"))
+table(tax_table(ps.o.1)[,"Phylum"], exclude = NULL)
+
+```
+
+```{r Cleaning}
+
+#remove standard things we wouldnt be interested in, such as archae, mitoch and the greenies!
+ps.n.2 <- ps.n.1 %>%
+  subset_taxa(
+    Kingdom == "k__Bacteria" &
+      Family  != "f__mitochondria" &
+      Class   != "c__Chloroplast" &
+      Phylum != "p__Cyanobacteria"
+  )
+
+#define the phyla you want to filter based on abundance above
+filter_phyla_n = c("p__Armatimonadetes","p__Chlamydiae", "p__Chloroflexi","p__Crenarchaeota","p__Euryarchaeota","p__Gemmatimonadetes","p__GN02","p__Lentisphaerae","p__NC10", "p__Nitrospirae", "p__Planctomycetes","p__Synergistetes", "p__TM6","p__TM7")
+
+ps.n.3 = subset_taxa(ps.n.2, !Phylum %in% filter_phyla_n)
+
+table(tax_table(ps.n.3)[,"Phylum"], exclude = NULL)
+
+#and now for the oral
+#remove standard things we wouldnt be interested in, such as archae, mitoch and the greenies!
+ps.o.2 <- ps.o.1 %>%
+  subset_taxa(
+    Kingdom == "k__Bacteria" &
+      Family  != "f__mitochondria" &
+      Class   != "c__Chloroplast" &
+      Phylum != "p__Cyanobacteria"
+  )
+
+#define the phyla you want to filter based on abundance above
+filter_phyla_o = c("p__Armatimonadetes", "p__Chloroflexi","p__Crenarchaeota","p__Euryarchaeota","p__Gemmatimonadetes","p__GN02","p__Lentisphaerae","p__NC10", "p__Nitrospirae", "p__Planctomycetes","p__Synergistetes", "p__TM6","p__TM7")
+
+ps.o.3 = subset_taxa(ps.o.2, !Phylum %in% filter_phyla_o)
+
+table(tax_table(ps.o.3)[,"Phylum"], exclude = NULL)
+```
+
+```{r Identify Low ASV Samples}
+
+#Format a data table to combine sample summary data with sample variable data
+ss.n <- sample_sums(ps.n.3)
+sd.n <- as.data.frame(sample_data(ps.n.3))
+ss.n.df <- merge(sd.n, data.frame("ASV" = ss.n), by ="row.names")
+# Plot the data by the variable
+y = 1000 # Set a threshold for the minimum number of acceptable reads. Can start as a guess
+x = "Location" # Set the x-axis variable you want to examine
+ss.n.df$Location <-factor(ss.n.df$Location, levels = c("Kampung_Sungai_Pergam", "Kampung_Sungai_Berua_HT"))
+#label = "Subject" # This is the label you want to overlay on the points
+p.ss.n.boxplot <- ggplot(ss.n.df, aes_string(x, y = "ASV", color = "Location")) + 
+  geom_boxplot(outlier.colour="NA", position = position_dodge(width = 0.8)) +
+  #scale_colour_manual(values = color_pal) +
+  theme_bw() + 
+  geom_jitter(size = 2, alpha = 0.6) +
+  scale_y_log10() +
+  geom_hline(yintercept = y, lty = 2) +
+  theme(axis.text.x = element_blank()) + #remove x axis labels (as I have a legend)
+  labs(x=NULL) + #remove X title
+  labs(color = "Location") + #change legend title
+  theme(legend.position="bottom") +
+  ggtitle("Nasal") +
+  theme(legend.position = "none")
+
+p.ss.n.boxplot
+
+#and now for oral
+# Format a data table to combine sample summary data with sample variable data
+ss.o <- sample_sums(ps.o.3)
+sd.o <- as.data.frame(sample_data(ps.o.3))
+ss.o.df <- merge(sd.o, data.frame("ASV" = ss.o), by ="row.names")
+# Plot the data by the variable
+y = 1000 # Set a threshold for the minimum number of acceptable reads. Can start as a guess
+x = "Location" # Set the x-axis variable you want to examine
+ss.o.df$Location <-factor(ss.o.df$Location, levels = c("Kampung_Sungai_Pergam", "Kampung_Sungai_Berua_HT"))
+#label = "Subject" # This is the label you want to overlay on the points
+p.ss.o.boxplot <- ggplot(ss.o.df, aes_string(x, y = "ASV", color = "Location")) + 
+  geom_boxplot(outlier.colour="NA", position = position_dodge(width = 0.8)) +
+  #scale_colour_manual(values = color_pal) +
+  theme_bw() + 
+  geom_jitter(size = 2, alpha = 0.6) +
+  scale_y_log10() +
+  geom_hline(yintercept = y, lty = 2) +
+  theme(axis.text.x = element_blank()) + #remove x axis labels (as I have a legend)
+  labs(x=NULL) + #remove X title
+  labs(color = "Location") + #change legend title
+  theme(legend.position="bottom") +
+  ggtitle("Oral")
+
+p.ss.o.boxplot
+
+grid.arrange(p.ss.n.boxplot, p.ss.o.boxplot, ncol=1)
+```
+
+```{r Subset Samples <1000 ASVs}
+
+ps.n.4 <- prune_samples(sample_sums(ps.n.3) >= 1000, ps.n.3)
+
+ps.o.4 <- prune_samples(sample_sums(ps.o.3) >= 1000, ps.o.3)
+
+```
+
+```{r Generate a data frame with taxonomy and prevelance data}
+# Compute prevalence of each feature, store as data.frame
+prevdf.n = apply(X = otu_table(ps.n.1),
+                 MARGIN = ifelse(taxa_are_rows(ps.n.1), yes = 1, no = 2),
+                 FUN = function(x){sum(x > 0)})
+# Add taxonomy and total read counts to this data.frame
+prevdf.n = data.frame(Prevalence = prevdf.n,
+                      TotalAbundance = taxa_sums(ps.n.1),
+                      tax_table(ps.n.1))
+head(prevdf.n)
+
+# Compute prevalence of each feature, store as data.frame
+prevdf.o = apply(X = otu_table(ps.o.1),
+                 MARGIN = ifelse(taxa_are_rows(ps.o.1), yes = 1, no = 2),
+                 FUN = function(x){sum(x > 0)})
+# Add taxonomy and total read counts to this data.frame
+prevdf.o = data.frame(Prevalence = prevdf.o,
+                      TotalAbundance = taxa_sums(ps.o.1),
+                      tax_table(ps.o.1))
+head(prevdf.o)
+
+plyr::ddply(prevdf.n, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+plyr::ddply(prevdf.o, "Phylum", function(df1){cbind(mean(df1$Prevalence),sum(df1$Prevalence))})
+```
+
+```{r Subset based on presence in at least 5% of total samples}
+
+#  Define prevalence threshold as 5% of total samples
+prevalenceThreshold.n = 0.05 * nsamples(ps.n.noncontam)
+prevalenceThreshold.n #this is the number of samples that constitutes 5% of all samples, i.e. ~25
+
+#  Define prevalence threshold as 5% of total samples
+prevalenceThreshold.o = 0.05 * nsamples(ps.o.noncontam)
+prevalenceThreshold.o #this is the number of samples that constitutes 5% of all samples, i.e. ~25
+
+# Execute prevalence filter, using `prune_taxa()` function
+keepTaxa.n = rownames(prevdf.n)[(prevdf.n$Prevalence >= prevalenceThreshold.n)]
+ps.n.5 = prune_taxa(keepTaxa.n, ps.n.4)
+
+# Execute prevalence filter, using `prune_taxa()` function
+keepTaxa.o = rownames(prevdf.o)[(prevdf.o$Prevalence >= prevalenceThreshold.o)]
+ps.o.5 = prune_taxa(keepTaxa.o, ps.o.4)
+
+```
+
+```{r Log Transformation}
+
+ps.n.5.log = transform_sample_counts(ps.n.5, function(x) { log(x+1) })
+
+sample_data(ps.n.5.log)$Location <- factor(sample_data(ps.n.5.log)$Location,levels = c("Kampung_Sungai_Berua_HT","Kampung_Sungai_Pergam"),labels=c("Kampung_Sungai_Berua_HT" = "Site 2","Kampung_Sungai_Pergam" = "Site 1"))
+
+ps.o.5.log = transform_sample_counts(ps.o.5, function(x) { log(x+1) })
+
+sample_data(ps.o.5.log)$Location <- factor(sample_data(ps.o.5.log)$Location,levels = c("Kampung_Sungai_Berua_HT","Kampung_Sungai_Pergam"),labels=c("Kampung_Sungai_Berua_HT" = "Site 2","Kampung_Sungai_Pergam" = "Site 1"))
+
+```
+
+```{r alpha diversity nose}
+ps_meta.n <- sample_data(ps.n.5) %>% #this is the non-transformed data for comparison
+  data.frame() # convert from phyloseq format
+summary(ps_meta.n)
+
+ps_meta.n <- dplyr::as_data_frame(ps_meta.n, rownames = "sample_id")
+
+alpha_div2.n <- ps.n.5 %>%
+  estimate_richness(split = T, 
+                    measures = c("Observed", "Shannon", "Simpson", "Chao1")) %>%
+  mutate(sample_id = sample_names(ps.n.5)) # add sample IDs
+  
+alpha_div2.n <- right_join(ps_meta.n, # add metadata
+                        alpha_div2.n, 
+                        by = "sample_id")
+
+alpha_div_long2.n <- melt(alpha_div2.n, 
+                       measure.vars = c("Observed", "Shannon", "Simpson", "Chao1"))
+
+#rename the variables of Age
+alpha_div_long2.n$Age <-factor(alpha_div_long2.n$Age, labels = c(" " = "Missing age", "<5" = "<5", "18 to <50"="18-49","5 to <18"="5-17",  "50 to <65" = "50-65"))
+
+#remove all the missing age stuff
+alpha_div_long2.n.2 <- alpha_div_long2.n[alpha_div_long2.n$Age != "Missing age", ]
+
+#change the order
+alpha_div_long2.n.2$Age <- as.character(alpha_div_long2.n.2$Age)
+alpha_div_long2.n.2$Age <- factor(alpha_div_long2.n.2$Age, levels=c("<5", "5-17","18-49","50-65"))
+
+#could probably convert this to a ggplot so that it is in keepong with everything else??!
+
+ggboxplot(alpha_div_long2.n.2,
+          x = "variable",
+          y = "value", 
+          xlab = FALSE,
+          ylab = FALSE,
+          color = "Age", 
+          #palette = color_pal,
+          facet.by = "variable",
+          scales = "free",
+          add = "jitter", shape = 1) +
+  rremove("x.text") +
+  rremove("x.ticks") +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "bottom")+
+  ggtitle("Nasal")
+
+nasal.alpha.simpson.p <- ggboxplot(data=subset(alpha_div_long2.n.2, variable =="Simpson"),
+          x = "Age",
+          y = "value", 
+          xlab = FALSE,
+          ylab = FALSE,
+          color = "Age",
+          #palette = c("blue", "orange","dark grey","purple"),
+          #facet.by = "variable",
+          scales = "free",
+          add = "jitter", shape = 1) +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  rremove("x.text") +
+  rremove("x.ticks") +
+  theme_light() +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "none") +
+  ggtitle("Simpsons (1-D)") + 
+  stat_compare_means(comparisons = my_age_comparisons, label = "p.signif", size = 2)
+
+nasal.alpha.observed.p <- ggboxplot(data=subset(alpha_div_long2.n.2, variable =="Observed"),
+          x = "Age",
+          y = "value", 
+          xlab = FALSE,
+          ylab = FALSE,
+          color = "Age",
+          #palette = c("blue", "orange","dark grey","purple"),
+          #facet.by = "variable",
+          scales = "free",
+          add = "jitter", shape = 1) +
+  scale_color_viridis(discrete = TRUE, option = "D") +
+  rremove("x.text") +
+  rremove("x.ticks") +
+  theme_light() +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "none") +
+  ggtitle("Observed") + 
+  stat_compare_means(comparisons = my_age_comparisons, label = "p.signif", size = 2)
+
+```
+
+```{r alpha diversity oral}
+
+my_age_comparisons <- list(c("<5", "5-17"), c("<5", "18-49"), c("<5", "50-65"), c("5-17", "18-49"), c("5-17", "50-65"), c("18-49", "50-65"))
+
+ps_meta.o <- sample_data(ps.o.5) %>% #this is the non-transformed data for comparison
+  data.frame() # convert from phyloseq format
+summary(ps_meta.o)
+
+ps_meta.o <- dplyr::as_data_frame(ps_meta.o, rownames = "sample_id")
+
+alpha_div2.o <- ps.o.5 %>%
+  estimate_richness(split = T, 
+                    measures = c("Observed", "Shannon", "Simpson", "Chao1")) %>%
+  mutate(sample_id = sample_names(ps.o.5)) # add sample IDs
+  
+alpha_div2.o <- right_join(ps_meta.o, # add metadata
+                        alpha_div2.o, 
+                        by = "sample_id")
+
+alpha_div_long2.o <- melt(alpha_div2.o, 
+                       measure.vars = c("Observed", "Shannon", "Simpson", "Chao1"))
+
+#rename the variables of Age
+alpha_div_long2.o$Age <-factor(alpha_div_long2.o$Age, labels = c(" " = "Missing age", "<5" = "<5", "18 to <50"="18-49","5 to <18"="5-17",  "50 to <65" = "50-65"))
+
+#remove all the missing age stuff
+alpha_div_long2.o.2 <- alpha_div_long2.o[alpha_div_long2.o$Age != "Missing age", ]
+
+#change the order
+alpha_div_long2.o.2$Age <- as.character(alpha_div_long2.o.2$Age)
+alpha_div_long2.o.2$Age <- factor(alpha_div_long2.o.2$Age, levels=c("<5", "5-17","18-49","50-65"))
+
+#could probably convert this to a ggplot so that it is in keepong with everything else??!
+ggboxplot(alpha_div_long2.o.2,
+          x = "variable",
+          y = "value", 
+          xlab = FALSE,
+          ylab = FALSE,
+          fill = "Age",
+          palette = c("blue", "yellow","grey","black"),
+          facet.by = "variable",
+          scales = "free") +
+          #add = "jitter", shape = 1) +
+  rremove("x.text") +
+  rremove("x.ticks") +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "bottom") +
+  ggtitle("Oral") 
+
+oral.alpha.simpson.p <- ggboxplot(data=subset(alpha_div_long2.o.2, variable =="Simpson"),
+          x = "Age",
+          y = "value", 
+          xlab = FALSE,
+          ylab = FALSE,
+          color = "Age",
+          palette = c("blue", "orange","dark grey","purple"),
+          #facet.by = "variable",
+          scales = "free",
+          add = "jitter", shape = 1) +
+  #scale_color_viridis(discrete = TRUE, option = "A") +
+  rremove("x.text") +
+  rremove("x.ticks") +
+  theme_light() +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "none") +
+  ggtitle("Simpsons (1-D)") + 
+  stat_compare_means(comparisons = my_age_comparisons, label = "p.signif", size = 2)
+
+oral.alpha.observed.p <- ggboxplot(data=subset(alpha_div_long2.o.2, variable =="Observed"),
+          x = "Age",
+          y = "value", 
+          xlab = FALSE,
+          ylab = FALSE,
+          color = "Age",
+          palette = c("blue", "orange","dark grey","purple"),
+          #facet.by = "variable",
+          scales = "free",
+          add = "jitter", shape = 1) +
+  #scale_color_viridis(discrete = TRUE, option = "A") +
+  rremove("x.text") +
+  rremove("x.ticks") +
+  theme_light() +
+  theme(legend.title = element_blank()) +
+  theme(legend.position = "none") +
+  ggtitle("Observed") + 
+  stat_compare_means(comparisons = my_age_comparisons, label = "p.signif", size = 2)
+```
+
+```{r Beta Diversity three ways using log transformed data on Nasal}
+
+#This is all based on Susan Holmes full-stack phyloseq example
+
+sample_data(ps.n.5.log)$Age <-factor(sample_data(ps.n.5.log)$Age, levels = c("<5", "5 to <18", "18 to <50", "50 to <65", " "), labels = c("<5" = "<5", "5 to <18"="5-17", "18 to <50"="18-49", "50 to <65" = "50-65", " " = "Missing"))
+
+ps.n.5.log <- subset_samples(ps.n.5.log, Age!="Missing")
+
+
+#Bray with MDS
+out.brmds.log <- ordinate(ps.n.5.log, method = "MDS", distance = "bray")
+evals.brmds <- out.brmds.log$values$Eigenvalues
+
+brmds.p <- plot_ordination(ps.n.5.log, out.brmds.log, color = "Age",
+                  shape = "Location", title = "Bray (MDS)") +
+  coord_fixed(sqrt(evals.brmds[2] / evals.brmds[1])) +
+  labs(col = "Age", shape = "Location") +
+  scale_color_viridis(discrete = T, option = "D") +
+  theme_light()
+
+
+#Double PCA
+out.dpcoa.log <- ordinate(ps.n.5.log, method = "DPCoA")
+evals.dpcoa <- out.dpcoa.log$eig
+dpcoa.p <- plot_ordination(ps.n.5.log, out.dpcoa.log, color = "Age",
+                  shape = "Location", title="Double PCoA") +
+  coord_fixed(sqrt(evals.dpcoa[2] / evals.dpcoa[1])) +
+  labs(col = "Age", shape = "Location") +
+  scale_color_viridis(discrete = T, option = "D") +
+  theme_light()
+
+#plot just Location
+dpcoa.location.p <- plot_ordination(ps.n.5.log, out.dpcoa.log, color = "Location",
+                  title="Double PCoA") +
+  coord_fixed(sqrt(evals.dpcoa[2] / evals.dpcoa[1])) +
+  labs(col = "Location") +
+  scale_color_viridis(discrete = T, option = "D") +
+  theme_light()
+
+#plot just age
+dpcoa.age.p <- plot_ordination(ps.n.5.log, out.dpcoa.log, color = "Age",
+                  title="Double PCoA") +
+  coord_fixed(sqrt(evals.dpcoa[2] / evals.dpcoa[1])) +
+  labs(col = "Age") +
+  scale_color_viridis(discrete = T, option = "D") +
+  theme_light() 
+
+#Weighted unifrac
+out.wuf.log <- ordinate(ps.n.5.log, method = "PCoA", distance ="wunifrac")
+evals.wuf <- out.wuf.log$values$Eigenvalues
+wuf.p <- plot_ordination(ps.n.5.log, out.wuf.log, color = "Age",
+                  shape = "Location", title="Weighted Unifrac (PCoA)") +
+  coord_fixed(sqrt(evals.wuf[2] / evals.wuf[1])) +
+  labs(col = "Age", shape = "Location") +
+  scale_color_viridis(discrete = T, option = "D") +
+  theme_light()
+
+#plot just Location
+wuf.location.p <- plot_ordination(ps.n.5.log, out.wuf.log, color = "Location",
+                  title="Weighted Unifrac (PCoA)") +
+  coord_fixed(sqrt(evals.wuf[2] / evals.wuf[1])) +
+  labs(col = "Location") +
+  scale_color_viridis(discrete = T, option = "D") +
+  theme_light()
+
+#plot just age
+wuf.age.p <- plot_ordination(ps.n.5.log, out.wuf.log, color = "Age",
+                  title="Weighted Unifrac (PCoA)") +
+  coord_fixed(sqrt(evals.wuf[2] / evals.wuf[1])) +
+  labs(col = "Age") +
+  scale_color_viridis(discrete = T, option = "D") +
+  theme_light()
+
+brmds.p
+dpcoa.p
+wuf.p
+
+wuf.location.p + 
+  stat_ellipse(type = "norm", linetype = 2) 
+wuf.age.p +  
+  stat_ellipse(type = "norm", linetype = 2)
+
+dpcoa.location.p + 
+  stat_ellipse(type = "norm", linetype = 2) 
+nasal.dpcoa.age.p <- dpcoa.age.p +  
+  stat_ellipse(type = "norm", linetype = 2)
+
+grid.arrange(nrow = 2,dpcoa.location.p + 
+               stat_ellipse(type = "norm", linetype = 2) , dpcoa.age.p +  
+               stat_ellipse(type = "norm", linetype = 2))
+```
+
+```{r adonis nose}
+
+bdiv_mat_log.n <- phyloseq::distance(ps.n.5.log, "bray")
+
+adonis(bdiv_mat_log.n ~ Age, data.frame(sample_data(ps.n.5.log)))
+```
+
+```{r Beta Diversity three ways using log transformed data on Oral}
+
+#This is all based on Susan Holmes full-stack phyloseq example
+
+sample_data(ps.o.5.log)$Age <-factor(sample_data(ps.o.5.log)$Age, levels = c("<5", "5 to <18", "18 to <50", "50 to <65", " "), labels = c("<5" = "<5", "5 to <18"="5-17", "18 to <50"="18-49", "50 to <65" = "50-65", " " = "Missing"))
+
+ps.o.5.log <- subset_samples(ps.o.5.log, Age!="Missing")
+
+#Bray with MDS
+out.brmds.log.o <- ordinate(ps.o.5.log, method = "MDS", distance = "bray")
+evals.brmds.o <- out.brmds.log.o$values$Eigenvalues
+brmds.p.o <- plot_ordination(ps.o.5.log, out.brmds.log.o, color = "Age",
+                  shape = "Location", title = "Bray (MDS)") +
+  coord_fixed(sqrt(evals.brmds.o[2] / evals.brmds.o[1])) +
+  labs(col = "Age", shape = "Location") +
+  scale_color_manual(values = c("blue", "orange", "dark grey", "purple")) +
+  theme_light()
+
+#plot just age
+out.o.dpcoa.log <- ordinate(ps.o.5.log, method = "DPCoA")
+evals.o.dpcoa <- out.o.dpcoa.log$eig
+dpcoa.o.age.p <- plot_ordination(ps.o.5.log, out.o.dpcoa.log, color = "Age",
+                  title="Double PCoA") +
+  coord_fixed(sqrt(evals.dpcoa[2] / evals.dpcoa[1])) +
+  labs(col = "Age") +
+  scale_color_manual(values = c("blue", "orange", "dark grey", "purple")) +
+  theme_light() 
+
+brmds.p.o
+dpcoa.o.age.p
+
+oral.dpcoa.age.p <- dpcoa.o.age.p +  
+  stat_ellipse(type = "norm", linetype = 2)
+
+```
+
+```{r Beta Diversity Age versus Oral}
+
+dpcoa.o.gender.p <- plot_ordination(ps.o.5.log, out.o.dpcoa.log, color = "Gender",
+                  title="Double PCoA") +
+  coord_fixed(sqrt(evals.dpcoa[2] / evals.dpcoa[1])) +
+  labs(col = "Gender") +
+  scale_color_manual(values = c("grey", "orange", "blue")) +
+  theme_light() 
+
+bdiv_mat_log <- phyloseq::distance(ps.o.5.log, "bray")
+
+adonis(bdiv_mat_log ~ Gender, data.frame(sample_data(ps.o.5.log)))
+
+```
+
+```{r Arranging alpha and beta plots}
+
+plot_grid(nasal.alpha.observed.p, oral.alpha.observed.p,nasal.alpha.simpson.p, oral.alpha.simpson.p,nasal.dpcoa.age.p, oral.dpcoa.age.p, labels = c('A',' ','B',' ', 'C',' '), label_size = 12, nrow =3, ncol = 2)
+
+```
+
+```{r Nasal Log transformed Phyla Plot}
+
+#making the labels of the phylum facet easier to read, getting rid of the P__
+phyla.labs.2 <- c("Actinobacteria", "Bacteroidetes", "Firmicutes","Fusobacteria","Proteobacteria","Tenericutes","Verrucomicrobia")
+names(phyla.labs.2) <- c("p__Actinobacteria", "p__Bacteroidetes", "p__Firmicutes","p__Fusobacteria","p__Proteobacteria","p__Tenericutes","p__Verrucomicrobia")
+
+#one bar plot that shows phyla across seasons and age using log transformed data
+
+nasal.bar.p2 <- plot_bar(ps.n.5.log, x= "Subject", fill="Location") +
+  geom_bar(aes(color=Location, fill=Location), stat="identity") + 
+  facet_grid(Age~Phylum, labeller = labeller(Phylum = phyla.labs.2)) +
+  theme_light() +
+  theme(axis.text.x = element_blank()) +
+  scale_color_viridis(discrete = T, option = "D") +
+  scale_fill_viridis(discrete = T, option = "D") +
+  guides(colour=FALSE) +
+  ylab("Abundance (Log Transformed)") +
+  xlab("Participant") 
+
+nasal.bar.p2
+```
+
+
+```{r oral Log transformed Phyla Plot}
+
+#making the labels of the phylum facet easier to read, getting rid of the P__
+phyla.labs.2.oral <- c("Actinobacteria", "Bacteroidetes", "Firmicutes","Fusobacteria","Proteobacteria","Spirochaetes","Tenericutes")
+names(phyla.labs.2.oral) <- c("p__Actinobacteria", "p__Bacteroidetes", "p__Firmicutes","p__Fusobacteria","p__Proteobacteria","p__Spirochaetes","p__Tenericutes")
+
+# this is an alternative, that plots each sample on the x and facets by phylum and age
+oral.bar.p2 <- plot_bar(ps.o.5.log, x= "Subject", fill="Location") +
+  geom_bar(aes(color=Location, fill=Location), stat="identity") + 
+  facet_grid(Age~Phylum, labeller = labeller(Phylum = phyla.labs.2.oral)) +
+  theme_light() +
+  theme(axis.text.x = element_blank()) +
+  scale_color_manual(values = c("blue", "orange", "dark grey","purple", "red", "dark green", "black")) +
+  scale_fill_manual(values = c("blue", "orange", "dark grey","purple", "red", "dark green", "black")) +
+  guides(colour=FALSE) +
+  ylab("Abundance (Log Transformed)") +
+  xlab("Participant")
+
+oral.bar.p2
+```
+
+```{r Arranging taxa plots}
+
+plot_grid(nasal.bar.p2, oral.bar.p2, labels = c('A','B'), label_size = 12, nrow =2, ncol = 1)
+
+```
+
+```{r plotting a bar plot of nasal genus based on bc dist}
+
+ps.n.5.ra = transform_sample_counts(ps.n.5, function(x){x / sum(x)})
+
+ps.n.5.ra.GGlom <- tax_glom(ps.n.5.ra, "Genus")
+
+top8.names = names(sort(taxa_sums(ps.n.5.ra.GGlom), TRUE)[1:8])
+top8 = prune_taxa(top8.names, ps.n.5.ra.GGlom)
+
+plotDF <- psmelt(top8)
+propData <- as.data.frame(t(otu_table(top8)))
+
+#creating an order factors
+bcdist <- vegdist(propData, method="bray")
+hclustBC <- hclust(bcdist, method="ward.D2")
+
+# set sample factor levels 
+plotDF$Sample <- factor(plotDF$Sample, levels = hclustBC$labels[c(hclustBC$order)])
+
+hclustBC.tree <- ggdendrogram(hclustBC, rotate = FALSE, size = 2, labels = F)
+
+plotDF$Genus <- factor(plotDF$Genus, labels = c("g__Alloiococcus"="Dolosigranulum", "g__Corynebacterium" = "Corynebacterium", "g__Delftia" = "Delftia", "g__Haemophilus" = "Haemophilus", "g__Moraxella" = "Moraxella", "g__Ochrobactrum" = "Ochrobactum", "g__Propionibacterium" = "Propionibacterium", "g__Streptococcus" = "Streptococcus"))
+
+# plot again
+hclustBC.bar <- ggplot(plotDF, aes(Sample, Abundance, fill=Genus)) + 
+  geom_bar(stat="identity", position = "stack") + 
+  scale_fill_brewer(palette = "Set1") + 
+  theme(legend.position = "bottom") +
+  theme_light() +
+  xlab("Participant") +
+  theme(axis.text.x = element_blank()) +
+  #theme(axis.text.x = element_text(angle = 90, size = 5)) +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+
+plot_grid(hclustBC.tree, hclustBC.bar, nrow = 2)
+
+```
+
+
+```{r plotting a bar plot of oral genus based on bc dist}
+
+ps.o.5.ra = transform_sample_counts(ps.o.5, function(x){x / sum(x)})
+
+ps.o.5.ra.GGlom <- tax_glom(ps.o.5.ra, "Genus")
+
+top8.names.o = names(sort(taxa_sums(ps.o.5.ra.GGlom), TRUE)[1:8])
+top8.o = prune_taxa(top8.names.o, ps.o.5.ra.GGlom)
+
+plotDF.o <- psmelt(top8.o)
+propData.o <- as.data.frame(t(otu_table(top8.o)))
+
+#creating an order factors
+bcdist.o <- vegdist(propData.o, method="bray")
+hclustBC.o <- hclust(bcdist.o, method="ward.D2")
+
+# set sample factor levels 
+plotDF.o$Sample <- factor(plotDF.o$Sample, levels = hclustBC.o$labels[c(hclustBC.o$order)])
+
+hclustBC.tree.o <- ggdendrogram(hclustBC.o, rotate = FALSE, size = 2, labels = T)
+
+plotDF.o$Genus <- factor(plotDF.o$Genus, labels = c("g__Aggregatibacter"="Aggregatibacter", "g__Haemophilus" = "Haemophilus", "g__Neisseria" = "Neisseria", "g__Porphyromonas" = "Porphyromonas", "g__Prevotella" = "Prevotella", "g__Rothia" = "Rothia", "g__Streptococcus" = "Streptococcus", "g__Veillonella" = "Veillonella"))
+
+# plot again
+hclustBC.bar.o <- ggplot(plotDF.o, aes(Sample, Abundance, fill=Genus)) + 
+  geom_bar(stat="identity", position = "stack") + 
+  scale_fill_brewer(palette = "Dark2") + 
+  theme(legend.position = "bottom") +
+  theme_light() +
+  xlab("Participant") +
+  theme(axis.text.x = element_blank()) +
+  #theme(axis.text.x = element_text(angle = 90, size = 5)) +
+  theme(legend.position = "bottom") +
+  theme(legend.title = element_blank())
+
+plot_grid(hclustBC.tree.o, hclustBC.bar.o, nrow = 2)
+```
+
+```{r plot culture positivity against relative abundance}
+
+genus_abund <- ps.n.5.ra.GGlom %>%
+  psmelt()
+
+df.spn <- genus_abund %>%
+  filter(Genus == "g__Streptococcus") %>%
+  filter(S..pnuemoniae == "Yes" | S..pnuemoniae == "No")
+
+spn_plot <- ggviolin(df.spn, 
+         x = "S..pnuemoniae", 
+         y = "Abundance",
+         ylab = "Relative Abundance",
+         #facet.by = "Genus", 
+         fill = "S..pnuemoniae", title = "S. pneumoniae") + 
+         #palette = color_pal) +
+  theme(legend.position = "none") +
+  xlab("Culture") +
+  scale_x_discrete(breaks=c("No","Yes"),
+        labels=c("-","+")) +
+  stat_compare_means(comparisons = list(c("Yes", "No")), 
+                     method = "wilcox.test") # non-parametric test!
+spn_plot
+
+
+df.sa <- genus_abund %>%
+  filter(Genus == "g__Staphylococcus")%>%
+  filter(S..aureus == "Yes" | S..aureus == "No")
+
+sa_plot <- ggviolin(df.spn, 
+         x = "S..aureus", 
+         y = "Abundance",
+         ylab = "Relative Abundance",
+         #facet.by = "Genus", 
+         fill = "S..aureus", title = "S. aureus") + 
+         #palette = color_pal) +
+  xlab("Culture") +
+  scale_x_discrete(breaks=c("No","Yes"),
+        labels=c("-","+")) +
+  theme(legend.position = "none") +
+  stat_compare_means(comparisons = list(c("Yes", "No")), 
+                     method = "wilcox.test") # non-parametric test!
+sa_plot
+
+plot_grid(spn_plot, sa_plot, ncol = 2)
+
+```
+
+```{r plot haemophilus against smoking}
+
+df.hi <- genus_abund %>%
+  filter(Genus == "g__Haemophilus") %>%
+  filter(Smoking == "Yes" | Smoking == "No")
+
+hi_smoke_plot <- ggviolin(df.hi, 
+         x = "Smoking", 
+         y = "Abundance",
+         ylab = "Relative Abundance",
+         #facet.by = "Genus", 
+         fill = "Smoking", title = "Smoking") + 
+         #palette = color_pal) +
+  theme(legend.position = "none") +
+  xlab("Culture") +
+  scale_x_discrete(breaks=c("No","Yes"),
+        labels=c("-","+")) +
+  stat_compare_means(comparisons = list(c("Yes", "No")), 
+                     method = "wilcox.test") # non-parametric test!
+
+```
+
+```{r DeSeq Nose - old versus young}
+
+ds <- ps.n.5.log %>%
+  phyloseq_to_deseq2(~ Age) %>% # convert to deseq object
+  DESeq(sfType = "poscounts") # run deseq
+
+ds_res <- results(ds, contrast=c("Age", "5-17", "18-49")) %>%
+  data.frame() %>%
+  mutate(OTU = row.names(.)) # add otu names
+
+tax <- ps.n.5.log %>%
+  tax_table() %>%
+  as("matrix") %>%
+  data.frame() %>%
+  mutate(OTU = row.names(.))
+
+ds_res <- left_join(ds_res, tax, by = "OTU")
+
+ds_res <- ds_res %>% 
+  mutate(Significance = ifelse(padj < 0.05, "SIG", "NS"), # label significant taxa
+         SEmin = log2FoldChange-lfcSE, # add values for error bars
+         SEmax = log2FoldChange+lfcSE,
+         Genus = as.character(Genus)) # remove factor
+
+to_plot <- ds_res %>%
+  arrange(padj) # lowest p values on top
+
+to_plot <- to_plot %>% mutate(OTU = factor(OTU, levels = OTU))
+#to_plot <- to_plot %>% arrange(desc(to_plot$log2FoldChange))
+#to_plot <- to_plot[1:25,]
+
+ EnhancedVolcano(to_plot,
+    lab = to_plot$Genus,
+    x = 'log2FoldChange',
+    y = 'padj',
+    title = "Age Group Comparison\n5-17 vs.18-50",
+    xlab = bquote(~Log[2]~ 'fold change'),
+    ylab = bquote(~-Log[10]~adjusted~italic(P)),
+    pCutoff = 0.05,
+    FCcutoff = 1.5,
+    xlim = c(-5, 6),
+    ylim = c(0,5),
+    legendPosition = 'right',
+    legendLabSize = 9,
+    legendIconSize = 3.0, 
+    axisLabSize = 10,
+    captionLabSize = 10,
+    col=c('black', 'grey', 'yellow', 'blue'))
+
+```
+
+```{r Session info}
+
+sessionInfo()
+
+```
